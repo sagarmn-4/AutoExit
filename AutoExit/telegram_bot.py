@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from utils.config import get_env_var, get_section
+from utils.notifier import send_telegram
 
 
 class TelegramBotHandler:
@@ -18,7 +19,6 @@ class TelegramBotHandler:
         /pause - Pause position monitoring
         /resume - Resume position monitoring
         /settarget <points> - Update target points
-        /setsl <points> - Update stop-loss points
         /status - Show current bot status
     """
     
@@ -48,8 +48,11 @@ class TelegramBotHandler:
         # Register command handlers
         self.app.add_handler(CommandHandler("pause", self.pause_command))
         self.app.add_handler(CommandHandler("resume", self.resume_command))
+        # Convenience aliases for pause/resume
+        self.app.add_handler(CommandHandler("stop", self.pause_command))
+        self.app.add_handler(CommandHandler("start", self.resume_command))
         self.app.add_handler(CommandHandler("settarget", self.set_target_command))
-        self.app.add_handler(CommandHandler("setsl", self.set_sl_command))
+        self.app.add_handler(CommandHandler("paper", self.set_paper_mode_command))
         self.app.add_handler(CommandHandler("status", self.status_command))
         self.app.add_handler(CommandHandler("help", self.help_command))
     
@@ -100,26 +103,34 @@ class TelegramBotHandler:
         except ValueError:
             await update.message.reply_text("❌ Invalid number. Usage: /settarget <points>")
     
-    async def set_sl_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /setsl <points> command."""
+        # /setsl removed per simplified exit-only requirements
+
+    async def set_paper_mode_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /paper <on|off> command to toggle paper mode at runtime."""
         if not self._is_authorized(update):
             await update.message.reply_text("❌ Unauthorized")
             return
-        
+
         if not context.args or len(context.args) != 1:
-            await update.message.reply_text("Usage: /setsl <points>\nExample: /setsl 30")
+            await update.message.reply_text("Usage: /paper <on|off>")
             return
-        
+
+        val = context.args[0].strip().lower()
+        if val in ("on", "true", "1"):
+            self.monitor.paper_mode = True
+        elif val in ("off", "false", "0"):
+            self.monitor.paper_mode = False
+        else:
+            await update.message.reply_text("❌ Invalid value. Use: on | off")
+            return
+
+        mode = "📝 PAPER MODE" if self.monitor.paper_mode else "🔴 LIVE MODE"
+        # Confirm to the user and broadcast to the channel
+        await update.message.reply_text(f"Mode updated: {mode}")
         try:
-            points = float(context.args[0])
-            if points <= 0:
-                await update.message.reply_text("❌ Stop-loss must be positive")
-                return
-            
-            self.monitor.set_stoploss(points)
-            await update.message.reply_text(f"🛑 Stop-loss updated to {points} points")
-        except ValueError:
-            await update.message.reply_text("❌ Invalid number. Usage: /setsl <points>")
+            send_telegram(f"⚙️ Mode toggled via bot: {mode}")
+        except Exception:
+            pass
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command."""
@@ -128,7 +139,7 @@ class TelegramBotHandler:
             return
         
         status = self.monitor.get_status()
-        
+
         state = "⏸️ PAUSED" if status["paused"] else "▶️ RUNNING"
         mode = "📝 PAPER MODE" if status["paper_mode"] else "🔴 LIVE MODE"
         auto_exit = "✅ Enabled" if status["enable_auto_exit"] else "❌ Disabled"
@@ -139,7 +150,7 @@ class TelegramBotHandler:
             f"Mode: {mode}\n"
             f"Auto-exit: {auto_exit}\n\n"
             f"🎯 Target: {status['target_points']} points\n"
-            f"🛑 Stop-loss: {status['stoploss_points']} points\n"
+            # Stop-loss removed
             f"📊 Tracked positions: {status['tracked_count']}"
         )
         await update.message.reply_text(msg, parse_mode="HTML")
@@ -148,10 +159,13 @@ class TelegramBotHandler:
         """Handle /help command."""
         help_text = (
             "<b>AutoExit Bot Commands</b>\n\n"
-            "/pause - Pause position monitoring\n"
-            "/resume - Resume monitoring\n"
-            "/settarget <points> - Set target profit\n"
-            "/setsl <points> - Set stop-loss\n"
+            "/start - Resume monitoring\n"
+            "/stop - Pause monitoring\n"
+            "/resume - Resume monitoring (alias of /start)\n"
+            "/pause - Pause monitoring (alias of /stop)\n"
+            "/settarget &lt;points&gt; - Set target profit\n"
+            "/paper &lt;on|off&gt; - Toggle paper mode\n"
+            # /setsl removed
             "/status - Show bot status\n"
             "/help - Show this help"
         )

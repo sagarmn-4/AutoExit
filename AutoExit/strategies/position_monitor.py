@@ -1,6 +1,6 @@
 """
 AutoExit Position Monitor
-Monitors open long positions and automatically places target/SL exit orders.
+Monitors open long positions and places target exit orders.
 """
 import asyncio
 import logging
@@ -37,9 +37,7 @@ class PositionMonitor:
         # Load config
         config = get_section("EXIT_STRATEGY")
         self.target_points = config["target_points"]
-        self.stoploss_points = config["stoploss_points"]
-        self.product_type = config["product_type"]
-        self.order_variety = config["order_variety"]
+        # Simplified: no stop-loss orders and no product/variety in config
         self.enable_auto_exit = config["enable_auto_exit"]
         self.paper_mode = config["paper_mode"]
         
@@ -95,11 +93,7 @@ class PositionMonitor:
         self.logger.info(f"Target updated to {points} points")
         send_telegram(f"🎯 Target updated: {points} points")
     
-    def set_stoploss(self, points: float):
-        """Update stop-loss points dynamically."""
-        self.stoploss_points = points
-        self.logger.info(f"Stop-loss updated to {points} points")
-        send_telegram(f"🛑 Stop-loss updated: {points} points")
+    # Stop-loss functionality intentionally removed per simplified requirements
     
     def get_status(self) -> Dict:
         """Get current bot status."""
@@ -107,7 +101,7 @@ class PositionMonitor:
             "paused": self.paused,
             "running": self.running,
             "target_points": self.target_points,
-            "stoploss_points": self.stoploss_points,
+            # stoploss_points removed in simplified mode
             "tracked_count": len(self.tracked_positions),
             "paper_mode": self.paper_mode,
             "enable_auto_exit": self.enable_auto_exit
@@ -156,11 +150,10 @@ class PositionMonitor:
                 self.logger.info(f"Auto-exit disabled, skipping {symbol}")
                 return
             
-            # Calculate exit prices
+            # Calculate exit price (target only)
             target_price = round(avg_price + self.target_points, 2)
-            sl_price = round(avg_price - self.stoploss_points, 2)
             
-            self.logger.info(f"Placing exits for {symbol}: Entry={avg_price}, Target={target_price}, SL={sl_price}")
+            self.logger.info(f"Placing target exit for {symbol}: Entry={avg_price}, Target={target_price}")
             
             if self.paper_mode:
                 # Paper mode: just log and notify
@@ -169,8 +162,7 @@ class PositionMonitor:
                     f"Symbol: {symbol}\n"
                     f"Qty: {quantity}\n"
                     f"Entry: ₹{avg_price}\n"
-                    f"🎯 Target: ₹{target_price} (+{self.target_points})\n"
-                    f"🛑 Stop-loss: ₹{sl_price} (-{self.stoploss_points})"
+                    f"🎯 Target: ₹{target_price} (+{self.target_points})"
                 )
                 send_telegram(msg)
                 self.logger.info(f"Paper mode: Would place exits for {symbol}")
@@ -179,40 +171,25 @@ class PositionMonitor:
                 # Target order (limit sell)
                 target_order = await asyncio.to_thread(
                     self.kite_helper.kite.place_order,
-                    variety=self.order_variety,
+                    variety="regular",
                     exchange=exchange,
                     tradingsymbol=symbol,
                     transaction_type="SELL",
                     quantity=quantity,
-                    product=self.product_type,
+                    product="NRML",
                     order_type="LIMIT",
                     price=target_price
                 )
-                
-                # Stop-loss order (SL sell)
-                sl_order = await asyncio.to_thread(
-                    self.kite_helper.kite.place_order,
-                    variety=self.order_variety,
-                    exchange=exchange,
-                    tradingsymbol=symbol,
-                    transaction_type="SELL",
-                    quantity=quantity,
-                    product=self.product_type,
-                    order_type="SL",
-                    price=sl_price,
-                    trigger_price=sl_price
-                )
-                
+
                 msg = (
                     f"✅ <b>Exit Orders Placed</b>\n\n"
                     f"Symbol: {symbol}\n"
                     f"Qty: {quantity}\n"
                     f"Entry: ₹{avg_price}\n"
-                    f"🎯 Target: ₹{target_price} (Order: {target_order})\n"
-                    f"🛑 Stop-loss: ₹{sl_price} (Order: {sl_order})"
+                    f"🎯 Target: ₹{target_price} (Order: {target_order})"
                 )
                 send_telegram(msg)
-                self.logger.info(f"Placed exits for {symbol}: Target={target_order}, SL={sl_order}")
+                self.logger.info(f"Placed target exit for {symbol}: Target={target_order}")
                 
         except Exception as e:
             self.logger.error(f"Error placing exit orders: {e}", exc_info=True)

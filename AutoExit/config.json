@@ -1,61 +1,16 @@
-{{
-
-  "SYSTEM": {  "SYSTEM": {
-
-    "poll_interval_seconds": 10,    "instrument_tokens": {
-
-    "max_api_retries": 3,      "NIFTY 50": 256265,
-
-    "retry_backoff_seconds": 5,      "BANKNIFTY": 260105,
-
-    "log_level": "INFO"      "FINNIFTY": 257801
-
-  },    },
-
-  "EXIT_STRATEGY": {    "warmup_days": 1,
-
-    "target_points": 50,    "strike_intervals": {
-
-    "stoploss_points": 30,      "NIFTY 50": 50,
-
-    "product_type": "NRML",      "BANKNIFTY": 100,
-
-    "order_variety": "regular",      "FINNIFTY": 50
-
-    "enable_auto_exit": true,    }
-
-    "paper_mode": true  },
-
-  },  "SELL": {
-
-  "TELEGRAM": {    "timeframe": "5minute",
-
-    "enable_commands": true,    "gap_between_candle_and_ema": 1,
-
-    "admin_user_ids": []    "stoploss_points": 30,
-
-  }    "max_stoploss_per_day": 3,
-
-}    "lots": 1,
-
-    "otm_strike_distance": 1,
-    "underlying": "NIFTY 50",
-    "paper_mode": true,
-    "entry_offset_points": 10
+{
+  "SYSTEM": {
+    "poll_interval_seconds": 10,
+    "max_api_retries": 3,
+    "retry_backoff_seconds": 5,
+    "log_level": "INFO"
   },
-  "BUY": {
-    "timeframe": "15minute",
-    "gap_between_candle_and_ema": 1,
-    "stoploss_points": 30,
-    "max_stoploss_per_day": 3,
-    "lots": 1,
-    "otm_strike_distance": 1,
-    "underlying": "NIFTY 50",
+  "EXIT_STRATEGY": {
+    "enable_auto_exit": true,
     "paper_mode": true,
-    "entry_offset_points": 10
+    "target_points": 10
   },
-  "_notes": {
-    "quantity_note": "Quantity is in lots. For NIFTY, 1 lot = 75 units.",
-    "paper_mode_note": "If true, no live trades are executed — everything is logged as simulation."
+  "TELEGRAM": {
+    "admin_user_ids": []
   }
 }
