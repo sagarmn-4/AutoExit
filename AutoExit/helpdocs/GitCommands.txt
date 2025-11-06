@@ -1,0 +1,69 @@
+--------------COMMIT CHANGES-------
+
+git add .
+git commit -m "working"
+git push
+
+----------------
+
+🧭 Undoing or Reverting Commits (Safely)
+🧩 1️⃣ Undo changes before commit (i.e. not yet committed)
+
+If you changed some files but haven’t committed yet:
+
+git restore .
+
+
+This resets everything to the last committed state (like “undo all uncommitted changes”).
+
+If you only want to undo one file:
+
+git restore filename.py
+
+🪄 2️⃣ Undo the last commit but keep changes
+
+Maybe you committed too early, but want to re-edit before pushing:
+
+git reset --soft HEAD~1
+
+
+✅ Keeps your code changes
+❌ Removes the last commit
+You can then re-edit and recommit.
+
+🚫 3️⃣ Undo the last commit completely (delete it and its changes)
+
+If the last commit was wrong and you want to completely discard it:
+
+git reset --hard HEAD~1
+
+
+⚠️ This removes that commit and all its file changes.
+Use carefully — it’s like “go back in time.”
+
+🔁 4️⃣ Revert a commit after pushing to GitHub
+
+If you already pushed a commit to GitHub but it was wrong:
+
+git log
+
+
+Copy the commit hash (something like a1b2c3d4).
+
+Then:
+
+git revert a1b2c3d4
+
+
+This creates a new commit that undoes the effects of the chosen one (safe way — never deletes history).
+
+Finally push:
+
+git push
+
+📜 5️⃣ See commit history
+git log --oneline
+
+
+
+

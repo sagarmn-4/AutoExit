@@ -1,0 +1,41 @@
+{
+  "SYSTEM": {
+    "instrument_tokens": {
+      "NIFTY 50": 256265,
+      "BANKNIFTY": 260105,
+      "FINNIFTY": 257801
+    },
+    "warmup_days": 1,
+    "strike_intervals": {
+      "NIFTY 50": 50,
+      "BANKNIFTY": 100,
+      "FINNIFTY": 50
+    }
+  },
+  "SELL": {
+    "timeframe": "5minute",
+    "gap_between_candle_and_ema": 1,
+    "stoploss_points": 30,
+    "max_stoploss_per_day": 3,
+    "lots": 1,
+    "otm_strike_distance": 1,
+    "underlying": "NIFTY 50",
+    "paper_mode": true,
+    "entry_offset_points": 10
+  },
+  "BUY": {
+    "timeframe": "15minute",
+    "gap_between_candle_and_ema": 1,
+    "stoploss_points": 30,
+    "max_stoploss_per_day": 3,
+    "lots": 1,
+    "otm_strike_distance": 1,
+    "underlying": "NIFTY 50",
+    "paper_mode": true,
+    "entry_offset_points": 10
+  },
+  "_notes": {
+    "quantity_note": "Quantity is in lots. For NIFTY, 1 lot = 75 units.",
+    "paper_mode_note": "If true, no live trades are executed — everything is logged as simulation."
+  }
+}
