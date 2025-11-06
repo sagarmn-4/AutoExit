@@ -1,0 +1,29 @@
+# Environment and tooling
+.env
+venv/
+.vscode/
+.idea/
+
+# Bytecode and cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+
+# Logs and runtime files
+logs/
+*.log
+autoexit.pid
+
+# Build artifacts
+build/
+dist/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Misc
+paper_trades.csv
+backup_*/
