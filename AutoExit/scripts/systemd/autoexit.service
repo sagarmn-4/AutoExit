@@ -1,0 +1,15 @@
+[Unit]
+Description=AutoExit Position Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/AutoExit/AutoExit
+ExecStart=/home/ubuntu/AutoExit/venv/bin/python /home/ubuntu/AutoExit/AutoExit/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

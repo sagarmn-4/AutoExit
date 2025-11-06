@@ -1,3 +1,0 @@
-- Signal when the low of Alert candle is taken away, not on the close of Signal candle
-- Add SL, Targets etc as per strategy file
-- Take care of EMA gap as per config file
