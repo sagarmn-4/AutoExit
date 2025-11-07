@@ -10,6 +10,7 @@ from datetime import datetime
 from utils.kite_helper import KiteHelper
 from utils.config import get_section
 from utils.notifier import send_telegram
+from utils.runtime_state import load_runtime_state, update_runtime_state
 
 
 class PositionMonitor:
@@ -40,6 +41,18 @@ class PositionMonitor:
         # Simplified: no stop-loss orders and no product/variety in config
         self.enable_auto_exit = config["enable_auto_exit"]
         self.paper_mode = config["paper_mode"]
+
+        # Override with any persisted runtime state (best-effort)
+        try:
+            rs = load_runtime_state()
+            if isinstance(rs.get("target_points"), (int, float)):
+                self.target_points = float(rs["target_points"])
+            if isinstance(rs.get("paper_mode"), bool):
+                self.paper_mode = bool(rs["paper_mode"])
+            if isinstance(rs.get("paused"), bool):
+                self.paused = bool(rs["paused"])  # set before start loop
+        except Exception:
+            pass
         
         system_config = get_section("SYSTEM")
         self.poll_interval = system_config["poll_interval_seconds"]
@@ -80,18 +93,33 @@ class PositionMonitor:
         self.paused = True
         self.logger.info("Position monitor paused")
         send_telegram("⏸️ Monitoring Paused")
+        # Persist runtime state
+        try:
+            update_runtime_state(paused=True)
+        except Exception:
+            pass
     
     def resume(self):
         """Resume monitoring."""
         self.paused = False
         self.logger.info("Position monitor resumed")
         send_telegram("▶️ Monitoring Resumed")
+        # Persist runtime state
+        try:
+            update_runtime_state(paused=False)
+        except Exception:
+            pass
     
     def set_target(self, points: float):
         """Update target points dynamically."""
         self.target_points = points
         self.logger.info(f"Target updated to {points} points")
         send_telegram(f"🎯 Target updated: {points} points")
+        # Persist runtime state
+        try:
+            update_runtime_state(target_points=float(points))
+        except Exception:
+            pass
     
     # Stop-loss functionality intentionally removed per simplified requirements
     
