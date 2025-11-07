@@ -50,6 +50,8 @@ class PositionMonitor:
         
         # State
         self.tracked_positions: Set[str] = set()
+        # Pending exits map: pos_key -> remaining quantity to exit
+        self.pending_exits: Dict[str, int] = {}
         self.paused = False
         self.running = False
         
@@ -123,7 +125,16 @@ class PositionMonitor:
                 
                 pos_key = self._position_key(position)
                 
-                # Skip if already tracked
+                # If we have a pending remainder for this position, try to continue exits first
+                if pos_key in self.pending_exits:
+                    self.logger.info(f"Continuing pending exits for {pos_key}; remaining={self.pending_exits[pos_key]}")
+                    cont_ok = await self._place_exit_orders(position, resume_pending=True)
+                    # If fully done, cleanup
+                    if cont_ok and pos_key not in self.pending_exits:
+                        self.tracked_positions.add(pos_key)
+                    continue
+
+                # Skip if already handled completely
                 if pos_key in self.tracked_positions:
                     continue
                 
@@ -137,7 +148,7 @@ class PositionMonitor:
         except Exception as e:
             self.logger.error(f"Error checking positions: {e}", exc_info=True)
     
-    async def _place_exit_orders(self, position: Dict) -> bool:
+    async def _place_exit_orders(self, position: Dict, resume_pending: bool = False) -> bool:
         """
         Place target and stop-loss orders for a position.
         
@@ -146,9 +157,11 @@ class PositionMonitor:
         """
         try:
             symbol = position["tradingsymbol"]
-            quantity = position["quantity"]
+            quantity = int(position["quantity"])
             avg_price = position["average_price"]
             exchange = position["exchange"]
+            product = position.get("product", "NRML")
+            pos_key = self._position_key(position)
             
             if not self.enable_auto_exit:
                 self.logger.info(f"Auto-exit disabled, skipping {symbol}")
@@ -161,8 +174,12 @@ class PositionMonitor:
                 )
                 return False
             
-            # Calculate exit price (target only)
-            target_price = round(avg_price + self.target_points, 2)
+            # Calculate exit price (target only) and snap to valid tick size
+            target_raw = avg_price + self.target_points
+            tick = 0.05 if exchange == "NFO" else 0.05  # default tick
+            # Snap to nearest tick and 2 decimals
+            target_steps = round(target_raw / tick)
+            target_price = round(target_steps * tick, 2)
             
             self.logger.info(f"Placing target exit for {symbol}: Entry={avg_price}, Target={target_price}")
             
@@ -179,28 +196,68 @@ class PositionMonitor:
                 self.logger.info(f"Paper mode: Would place exits for {symbol}")
             else:
                 # Live mode: place actual orders
-                # Target order (limit sell)
-                target_order = await asyncio.to_thread(
-                    self.kite_helper.kite.place_order,
-                    variety="regular",
-                    exchange=exchange,
-                    tradingsymbol=symbol,
-                    transaction_type="SELL",
-                    quantity=quantity,
-                    product="NRML",
-                    order_type="LIMIT",
-                    price=target_price
-                )
+                # Respect exchange freeze quantity: slice into chunks
+                from utils.config import get_section as _get_section
+                cfg = _get_section("EXIT_STRATEGY")
+                max_per_order = int(cfg.get("max_order_quantity", 1800))
+                # If resuming, use any remaining quantity we tracked
+                remaining = int(self.pending_exits.get(pos_key, quantity))
+                placed_orders = []
+                slices_attempted = 0
+                slices_placed = 0
+                while remaining > 0:
+                    slice_qty = min(remaining, max_per_order)
+                    slices_attempted += 1
+                    try:
+                        target_order = await asyncio.to_thread(
+                            self.kite_helper.kite.place_order,
+                            variety="regular",
+                            exchange=exchange,
+                            tradingsymbol=symbol,
+                            transaction_type="SELL",
+                            quantity=slice_qty,
+                            product=product,
+                            order_type="LIMIT",
+                            price=target_price,
+                        )
+                        placed_orders.append(target_order)
+                        slices_placed += 1
+                        self.logger.info(
+                            f"Placed target exit slice for {symbol}: qty={slice_qty}, price={target_price}, order={target_order}"
+                        )
+                        remaining -= slice_qty
+                    except Exception as slice_err:
+                        # On failure, persist remaining and break to retry later
+                        self.pending_exits[pos_key] = remaining
+                        self.logger.error(
+                            f"Slice failed for {symbol} qty={slice_qty}: {slice_err}. Remaining to exit later: {remaining}",
+                            exc_info=True,
+                        )
+                        break
 
-                msg = (
-                    f"✅ <b>Exit Orders Placed</b>\n\n"
-                    f"Symbol: {symbol}\n"
-                    f"Qty: {quantity}\n"
-                    f"Entry: ₹{avg_price}\n"
-                    f"🎯 Target: ₹{target_price} (Order: {target_order})"
-                )
-                send_telegram(msg)
-                self.logger.info(f"Placed target exit for {symbol}: Target={target_order}")
+                # If fully exited, cleanup pending map
+                if remaining <= 0 and pos_key in self.pending_exits:
+                    del self.pending_exits[pos_key]
+
+                # Notify summary
+                if placed_orders:
+                    msg = (
+                        f"✅ <b>Exit Orders Placed</b>\n\n"
+                        f"Symbol: {symbol}\n"
+                        f"Qty: {quantity} (sliced <= {max_per_order})\n"
+                        f"Entry: ₹{avg_price}\n"
+                        f"🎯 Target: ₹{target_price} (Orders: {', '.join(map(str, placed_orders))})\n"
+                        f"🧮 Placed slices: {slices_placed}/{slices_attempted}"
+                    )
+                    if pos_key in self.pending_exits:
+                        msg += f"\n⏳ Pending remaining qty: {self.pending_exits[pos_key]}"
+                    send_telegram(msg)
+                else:
+                    # No order placed at all; report and remember remaining
+                    self.pending_exits[pos_key] = remaining
+                    send_telegram(
+                        f"❌ Could not place any exit slice for {symbol}. Will retry. Remaining qty: {remaining}"
+                    )
             return True
                 
         except Exception as e:

@@ -7,9 +7,10 @@
   },
   "EXIT_STRATEGY": {
     "enable_auto_exit": true,
-    "paper_mode": true,
+    "paper_mode": false,
     "target_points": 10,
-    "min_entry_price": 50
+    "min_entry_price": 50,
+    "max_order_quantity": 1800
   },
   "TELEGRAM": {
     "admin_user_ids": []
