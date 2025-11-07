@@ -8,7 +8,8 @@
   "EXIT_STRATEGY": {
     "enable_auto_exit": true,
     "paper_mode": true,
-    "target_points": 10
+    "target_points": 10,
+    "min_entry_price": 50
   },
   "TELEGRAM": {
     "admin_user_ids": []

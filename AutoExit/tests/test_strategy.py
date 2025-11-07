@@ -65,6 +65,27 @@ class TestPositionMonitor(unittest.IsolatedAsyncioTestCase):
             await mon._check_positions()
             self.assertEqual(len(mon.tracked_positions), 1)
 
+    async def test_skips_low_price_positions_below_threshold(self):
+        # Positions with average_price <= min_entry_price (default 50) should be skipped
+        positions = [
+            {
+                "tradingsymbol": "NIFTY25NOV24000PE",
+                "product": "NRML",
+                "quantity": 50,
+                "average_price": 20.0,
+                "exchange": "NFO",
+            }
+        ]
+        helper = FakeKiteHelper(positions=positions)
+        mon = PositionMonitor(helper)
+
+        with patch("strategies.position_monitor.send_telegram") as mock_send:
+            await mon._check_positions()
+            # Should not track as exit wasn't placed
+            self.assertEqual(len(mon.tracked_positions), 0)
+            # No telegram should be sent for placing exits
+            self.assertFalse(mock_send.called)
+
 
 class TestTradeManager(unittest.TestCase):
     def setUp(self):

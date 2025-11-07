@@ -10,7 +10,6 @@ from datetime import datetime
 from utils.kite_helper import KiteHelper
 from utils.config import get_section
 from utils.notifier import send_telegram
-from utils.runtime_state import load_runtime_state, update_runtime_state
 
 
 class PositionMonitor:
@@ -41,18 +40,8 @@ class PositionMonitor:
         # Simplified: no stop-loss orders and no product/variety in config
         self.enable_auto_exit = config["enable_auto_exit"]
         self.paper_mode = config["paper_mode"]
-
-        # Override with any persisted runtime state (best-effort)
-        try:
-            rs = load_runtime_state()
-            if isinstance(rs.get("target_points"), (int, float)):
-                self.target_points = float(rs["target_points"])
-            if isinstance(rs.get("paper_mode"), bool):
-                self.paper_mode = bool(rs["paper_mode"])
-            if isinstance(rs.get("paused"), bool):
-                self.paused = bool(rs["paused"])  # set before start loop
-        except Exception:
-            pass
+        # Minimum entry price threshold to skip cheap hedge positions
+        self.min_entry_price = float(config.get("min_entry_price", 50))
         
         system_config = get_section("SYSTEM")
         self.poll_interval = system_config["poll_interval_seconds"]
@@ -93,33 +82,18 @@ class PositionMonitor:
         self.paused = True
         self.logger.info("Position monitor paused")
         send_telegram("⏸️ Monitoring Paused")
-        # Persist runtime state
-        try:
-            update_runtime_state(paused=True)
-        except Exception:
-            pass
     
     def resume(self):
         """Resume monitoring."""
         self.paused = False
         self.logger.info("Position monitor resumed")
         send_telegram("▶️ Monitoring Resumed")
-        # Persist runtime state
-        try:
-            update_runtime_state(paused=False)
-        except Exception:
-            pass
     
     def set_target(self, points: float):
         """Update target points dynamically."""
         self.target_points = points
         self.logger.info(f"Target updated to {points} points")
         send_telegram(f"🎯 Target updated: {points} points")
-        # Persist runtime state
-        try:
-            update_runtime_state(target_points=float(points))
-        except Exception:
-            pass
     
     # Stop-loss functionality intentionally removed per simplified requirements
     
@@ -155,13 +129,15 @@ class PositionMonitor:
                 
                 # New long position detected
                 self.logger.info(f"New long position detected: {pos_key}")
-                await self._place_exit_orders(position)
-                self.tracked_positions.add(pos_key)
+                placed = await self._place_exit_orders(position)
+                # Only mark as tracked if we actually placed (or simulated) exits
+                if placed:
+                    self.tracked_positions.add(pos_key)
                 
         except Exception as e:
             self.logger.error(f"Error checking positions: {e}", exc_info=True)
     
-    async def _place_exit_orders(self, position: Dict):
+    async def _place_exit_orders(self, position: Dict) -> bool:
         """
         Place target and stop-loss orders for a position.
         
@@ -176,7 +152,14 @@ class PositionMonitor:
             
             if not self.enable_auto_exit:
                 self.logger.info(f"Auto-exit disabled, skipping {symbol}")
-                return
+                return False
+
+            # Skip low-price entries (likely hedge OTM options)
+            if avg_price <= self.min_entry_price:
+                self.logger.info(
+                    f"Skipping {symbol}: entry ₹{avg_price} <= min_entry_price ₹{self.min_entry_price}"
+                )
+                return False
             
             # Calculate exit price (target only)
             target_price = round(avg_price + self.target_points, 2)
@@ -218,7 +201,9 @@ class PositionMonitor:
                 )
                 send_telegram(msg)
                 self.logger.info(f"Placed target exit for {symbol}: Target={target_order}")
+            return True
                 
         except Exception as e:
             self.logger.error(f"Error placing exit orders: {e}", exc_info=True)
             send_telegram(f"❌ Error placing exits for {position['tradingsymbol']}: {str(e)}")
+            return False
