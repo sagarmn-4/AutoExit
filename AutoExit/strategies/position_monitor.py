@@ -115,35 +115,92 @@ class PositionMonitor:
         """Check positions and place exit orders for new longs."""
         try:
             positions = await asyncio.to_thread(self.kite_helper.kite.positions)
+            # Fetch current open orders to compute existing pending exits
+            try:
+                orders = await asyncio.to_thread(self.kite_helper.kite.orders)
+            except Exception:
+                orders = []
+
+            pending_sell_by_key: Dict[str, int] = {}
+            for od in orders or []:
+                try:
+                    if od.get("transaction_type") != "SELL":
+                        continue
+                    status = (od.get("status") or "").upper()
+                    if status not in ("OPEN", "TRIGGER PENDING"):
+                        continue
+                    sym = od.get("tradingsymbol")
+                    prod = od.get("product")
+                    pos_key = f"{sym}_{prod}"
+                    pend = od.get("pending_quantity")
+                    if pend is None:
+                        qty = int(od.get("quantity", 0))
+                        filled = int(od.get("filled_quantity", 0))
+                        pend = max(qty - filled, 0)
+                    pending_sell_by_key[pos_key] = pending_sell_by_key.get(pos_key, 0) + int(pend)
+                except Exception:
+                    continue
+
             net_positions = positions.get("net", [])
-            
+            any_qualifying = False
+            uncovered_found = False
+
             for position in net_positions:
-                # Only process long positions (quantity > 0)
                 quantity = position.get("quantity", 0)
                 if quantity <= 0:
                     continue
-                
                 pos_key = self._position_key(position)
-                
-                # If we have a pending remainder for this position, try to continue exits first
+                avg_price = position.get("average_price", 0.0)
+                if avg_price <= self.min_entry_price:
+                    continue
+                any_qualifying = True
+
+                pending_sell = int(pending_sell_by_key.get(pos_key, 0))
+                net_qty = int(quantity)
+                desired_remaining = max(net_qty - pending_sell, 0)
+
+                # Pending continuation
                 if pos_key in self.pending_exits:
+                    if desired_remaining <= 0:
+                        del self.pending_exits[pos_key]
+                        self.tracked_positions.add(pos_key)
+                        self.logger.info(f"{pos_key}: fully covered by existing exit orders; clearing pending")
+                        continue
+                    if self.pending_exits[pos_key] != desired_remaining:
+                        self.logger.info(f"{pos_key}: adjust pending remainder {self.pending_exits[pos_key]} -> {desired_remaining}")
+                        self.pending_exits[pos_key] = desired_remaining
                     self.logger.info(f"Continuing pending exits for {pos_key}; remaining={self.pending_exits[pos_key]}")
                     cont_ok = await self._place_exit_orders(position, resume_pending=True)
-                    # If fully done, cleanup
-                    if cont_ok and pos_key not in self.pending_exits:
+                    if cont_ok and pos_key not in self.pending_exits and desired_remaining > 0:
                         self.tracked_positions.add(pos_key)
+                    if desired_remaining > 0 and pos_key in self.pending_exits:
+                        uncovered_found = True
                     continue
 
-                # Skip if already handled completely
                 if pos_key in self.tracked_positions:
                     continue
-                
-                # New long position detected
-                self.logger.info(f"New long position detected: {pos_key}")
-                placed = await self._place_exit_orders(position)
-                # Only mark as tracked if we actually placed (or simulated) exits
-                if placed:
+
+                if desired_remaining <= 0:
                     self.tracked_positions.add(pos_key)
+                    self.logger.info(f"{pos_key}: exit orders already cover full qty; skipping placement")
+                    continue
+
+                self.logger.info(f"New long position detected: {pos_key} (remaining to cover: {desired_remaining})")
+                self.pending_exits[pos_key] = desired_remaining
+                placed = await self._place_exit_orders(position, resume_pending=True)
+                if placed and pos_key not in self.pending_exits:
+                    self.tracked_positions.add(pos_key)
+                else:
+                    uncovered_found = True
+
+            new_all_covered = (any_qualifying and not uncovered_found)
+            if new_all_covered and self.last_all_covered is not True:
+                try:
+                    send_telegram("✅ All qualifying positions have exit orders in place.")
+                except Exception:
+                    pass
+                self.logger.info("All qualifying positions have exit orders in place.")
+            self.last_all_covered = new_all_covered
                 
         except Exception as e:
             self.logger.error(f"Error checking positions: {e}", exc_info=True)
@@ -181,7 +238,16 @@ class PositionMonitor:
             target_steps = round(target_raw / tick)
             target_price = round(target_steps * tick, 2)
             
-            self.logger.info(f"Placing target exit for {symbol}: Entry={avg_price}, Target={target_price}")
+            # Display the actual position entry (prefer buy_price if present, else average_price)
+            try:
+                raw_buy_price = position.get("buy_price")
+                if raw_buy_price is not None:
+                    display_entry = round(float(raw_buy_price), 2)
+                else:
+                    display_entry = round(float(avg_price), 2)
+            except Exception:
+                display_entry = round(float(avg_price), 2)
+            self.logger.info(f"Placing target exit for {symbol}: Entry={display_entry}, Target={target_price}")
             
             if self.paper_mode:
                 # Paper mode: just log and notify
@@ -189,25 +255,23 @@ class PositionMonitor:
                     f"📊 <b>Paper Mode Exit Orders</b>\n\n"
                     f"Symbol: {symbol}\n"
                     f"Qty: {quantity}\n"
-                    f"Entry: ₹{avg_price}\n"
+                    f"Entry: ₹{display_entry}\n"
                     f"🎯 Target: ₹{target_price} (+{self.target_points})"
                 )
                 send_telegram(msg)
                 self.logger.info(f"Paper mode: Would place exits for {symbol}")
             else:
                 # Live mode: place actual orders
-                # Respect exchange freeze quantity: slice into chunks
                 from utils.config import get_section as _get_section
                 cfg = _get_section("EXIT_STRATEGY")
                 max_per_order = int(cfg.get("max_order_quantity", 1800))
-                # If resuming, use any remaining quantity we tracked
                 remaining = int(self.pending_exits.get(pos_key, quantity))
                 placed_orders = []
                 slices_attempted = 0
                 slices_placed = 0
                 while remaining > 0:
                     slice_qty = min(remaining, max_per_order)
-                    slices_attempted += 1
+                    self.logger.info(f"Placing target exit for {symbol}: Entry={display_entry}, Target={target_price}")
                     try:
                         target_order = await asyncio.to_thread(
                             self.kite_helper.kite.place_order,
@@ -245,7 +309,7 @@ class PositionMonitor:
                         f"✅ <b>Exit Orders Placed</b>\n\n"
                         f"Symbol: {symbol}\n"
                         f"Qty: {quantity} (sliced <= {max_per_order})\n"
-                        f"Entry: ₹{avg_price}\n"
+                        f"Entry: ₹{display_entry}\n"
                         f"🎯 Target: ₹{target_price} (Orders: {', '.join(map(str, placed_orders))})\n"
                         f"🧮 Placed slices: {slices_placed}/{slices_attempted}"
                     )
