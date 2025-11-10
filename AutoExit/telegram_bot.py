@@ -5,7 +5,7 @@ Provides command interface for controlling the position monitor.
 import logging
 from typing import Optional
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 from utils.config import get_env_var, get_section
 from utils.notifier import send_telegram
@@ -52,11 +52,10 @@ class TelegramBotHandler:
         self.app.add_handler(CommandHandler("stop", self.pause_command))
         self.app.add_handler(CommandHandler("start", self.resume_command))
         self.app.add_handler(CommandHandler("settarget", self.set_target_command))
+        self.app.add_handler(CommandHandler("setpoll", self.set_poll_command))
         self.app.add_handler(CommandHandler("paper", self.set_paper_mode_command))
         self.app.add_handler(CommandHandler("status", self.status_command))
         self.app.add_handler(CommandHandler("help", self.help_command))
-        # Plain text handler (no slash needed)
-        self.app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), self._text_router))
     
     def _is_authorized(self, update: Update) -> bool:
         """Check if user is authorized to use commands."""
@@ -107,6 +106,26 @@ class TelegramBotHandler:
     
         # /setsl removed per simplified exit-only requirements
 
+    async def set_poll_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /setpoll <seconds> command to adjust poll interval."""
+        if not self._is_authorized(update):
+            await update.message.reply_text("❌ Unauthorized")
+            return
+
+        if not context.args or len(context.args) != 1:
+            await update.message.reply_text("Usage: /setpoll <seconds>\nExample: /setpoll 5")
+            return
+
+        try:
+            seconds = float(context.args[0])
+            self.monitor.set_poll_interval(seconds)
+            # Read back the applied value from monitor status
+            status = self.monitor.get_status()
+            applied = status.get("poll_interval_seconds", seconds)
+            await update.message.reply_text(f"⏱️ Poll interval updated to {applied}s")
+        except ValueError:
+            await update.message.reply_text("❌ Invalid number. Usage: /setpoll <seconds>")
+
     async def set_paper_mode_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /paper <on|off> command to toggle paper mode at runtime."""
         if not self._is_authorized(update):
@@ -133,12 +152,6 @@ class TelegramBotHandler:
             send_telegram(f"⚙️ Mode toggled via bot: {mode}")
         except Exception:
             pass
-        # Persist runtime state change
-        try:
-            from utils.runtime_state import update_runtime_state
-            update_runtime_state(paper_mode=bool(self.monitor.paper_mode))
-        except Exception:
-            pass
     
     async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status command."""
@@ -158,6 +171,7 @@ class TelegramBotHandler:
             f"Mode: {mode}\n"
             f"Auto-exit: {auto_exit}\n\n"
             f"🎯 Target: {status['target_points']} points\n"
+            f"⏱️ Poll interval: {status['poll_interval_seconds']}s\n"
             # Stop-loss removed
             f"📊 Tracked positions: {status['tracked_count']}"
         )
@@ -172,110 +186,13 @@ class TelegramBotHandler:
             "/resume - Resume monitoring (alias of /start)\n"
             "/pause - Pause monitoring (alias of /stop)\n"
             "/settarget &lt;points&gt; - Set target profit\n"
+            "/setpoll &lt;seconds&gt; - Set poll interval (2-120s)\n"
             "/paper &lt;on|off&gt; - Toggle paper mode\n"
             # /setsl removed
             "/status - Show bot status\n"
-            "/help - Show this help\n\n"
-            "<i>Tip: You can also type without '/' e.g., 'pause', 'start', 'target 12', 'paper on'.</i>"
+            "/help - Show this help"
         )
         await update.message.reply_text(help_text, parse_mode="HTML")
-
-    async def _text_router(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle plain text commands without leading slash."""
-        if not update.message or not update.message.text:
-            return
-        if not self._is_authorized(update):
-            await update.message.reply_text("❌ Unauthorized")
-            return
-
-        text = update.message.text.strip()
-        lower = text.lower()
-        parts = lower.split()
-        if not parts:
-            return
-
-        cmd = parts[0]
-
-        # Start/Stop/Pause/Resume
-        if cmd in ("pause", "stop"):
-            self.monitor.pause()
-            await update.message.reply_text("⏸️ Monitoring paused")
-            return
-        if cmd in ("resume", "start"):
-            self.monitor.resume()
-            await update.message.reply_text("▶️ Monitoring resumed")
-            return
-
-        # Status and help
-        if cmd == "status":
-            await self.status_command(update, context)
-            return
-        if cmd == "help":
-            await self.help_command(update, context)
-            return
-
-        # Paper mode: "paper on/off"
-        if cmd == "paper" and len(parts) >= 2:
-            val = parts[1]
-            if val in ("on", "true", "1"):
-                self.monitor.paper_mode = True
-            elif val in ("off", "false", "0"):
-                self.monitor.paper_mode = False
-            else:
-                await update.message.reply_text("❌ Invalid value. Use: on | off")
-                return
-            mode = "📝 PAPER MODE" if self.monitor.paper_mode else "🔴 LIVE MODE"
-            await update.message.reply_text(f"Mode updated: {mode}")
-            try:
-                send_telegram(f"⚙️ Mode toggled via bot: {mode}")
-            except Exception:
-                pass
-            # Persist runtime state change
-            try:
-                from utils.runtime_state import update_runtime_state
-                update_runtime_state(paper_mode=bool(self.monitor.paper_mode))
-            except Exception:
-                pass
-            return
-
-        # Target updates: "target 12" or "settarget 12" or "set target 12"
-        if cmd in ("target", "settarget") and len(parts) >= 2:
-            val = parts[1]
-            try:
-                points = float(val)
-                if points <= 0:
-                    await update.message.reply_text("❌ Target must be positive")
-                    return
-                self.monitor.set_target(points)
-                await update.message.reply_text(f"🎯 Target updated to {points} points")
-                try:
-                    from utils.runtime_state import update_runtime_state
-                    update_runtime_state(target_points=float(points))
-                except Exception:
-                    pass
-            except ValueError:
-                await update.message.reply_text("❌ Invalid number. Usage: target &lt;points&gt;")
-            return
-
-        if cmd == "set" and len(parts) >= 3 and parts[1] == "target":
-            try:
-                points = float(parts[2])
-                if points <= 0:
-                    await update.message.reply_text("❌ Target must be positive")
-                    return
-                self.monitor.set_target(points)
-                await update.message.reply_text(f"🎯 Target updated to {points} points")
-                try:
-                    from utils.runtime_state import update_runtime_state
-                    update_runtime_state(target_points=float(points))
-                except Exception:
-                    pass
-            except ValueError:
-                await update.message.reply_text("❌ Invalid number. Usage: set target &lt;points&gt;")
-            return
-
-        # Unknown plain text command
-        await update.message.reply_text("❓ Unknown command. Type 'help' or use /help")
     
     async def start(self):
         """Start the Telegram bot."""

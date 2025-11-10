@@ -54,6 +54,8 @@ class PositionMonitor:
         self.pending_exits: Dict[str, int] = {}
         self.paused = False
         self.running = False
+        # Track when all qualifying positions are covered by exit orders to avoid spamming
+        self.last_all_covered = None
         
     def _position_key(self, position: Dict) -> str:
         """Generate unique key for a position."""
@@ -96,6 +98,26 @@ class PositionMonitor:
         self.target_points = points
         self.logger.info(f"Target updated to {points} points")
         send_telegram(f"🎯 Target updated: {points} points")
+
+    def set_poll_interval(self, seconds: float):
+        """Update polling interval (seconds) at runtime with basic safety limits."""
+        try:
+            val = float(seconds)
+        except (TypeError, ValueError):
+            raise ValueError("poll interval must be a number (seconds)")
+
+        # Safety bounds: avoid too-frequent calls and excessively slow loops
+        MIN_S = 2.0
+        MAX_S = 120.0
+        clamped = max(MIN_S, min(val, MAX_S))
+        if clamped != val:
+            self.logger.info(f"Requested poll interval {val}s clamped to {clamped}s")
+        self.poll_interval = clamped
+        self.logger.info(f"Poll interval updated to {self.poll_interval}s")
+        try:
+            send_telegram(f"⏱️ Poll interval set to {self.poll_interval} seconds")
+        except Exception:
+            pass
     
     # Stop-loss functionality intentionally removed per simplified requirements
     
@@ -108,7 +130,8 @@ class PositionMonitor:
             # stoploss_points removed in simplified mode
             "tracked_count": len(self.tracked_positions),
             "paper_mode": self.paper_mode,
-            "enable_auto_exit": self.enable_auto_exit
+            "enable_auto_exit": self.enable_auto_exit,
+            "poll_interval_seconds": self.poll_interval,
         }
     
     async def _check_positions(self):
@@ -271,6 +294,7 @@ class PositionMonitor:
                 slices_placed = 0
                 while remaining > 0:
                     slice_qty = min(remaining, max_per_order)
+                    slices_attempted += 1
                     self.logger.info(f"Placing target exit for {symbol}: Entry={display_entry}, Target={target_price}")
                     try:
                         target_order = await asyncio.to_thread(
